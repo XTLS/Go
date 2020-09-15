@@ -114,6 +114,7 @@ type Conn struct {
 	index int
 	cache byte
 	skip  int
+	maybe bool
 
 	// bytesSent counts the bytes of application data sent.
 	// packetsSent counts packets.
@@ -680,58 +681,60 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	var backup, data []byte
 	var err error
 	typp := typ
-	if c.fall && typp == 21 {
+	if c.fall && typ == 23 && n == 19 {
 		backup = make([]byte, len(record))
 		copy(backup, record)
 	}
-	if !c.fall || typp != 23 {
+	if !c.fall || typ != 23 || n == 19 {
 		data, typ, err = c.in.decrypt(record)
 	}
 	if !c.fall {
 		if err != nil {
 			return c.in.setErrorLocked(c.sendAlert(err.(alert)))
 		} else if c.RPRX {
-			if c.total == 0 && typp == 23 && vers == 771 && len(data) >= 5 {
-				if data[0] == 23 && data[1] == 3 && data[2] == 3 {
-					if (int(data[3])<<8 | int(data[4])) <= 16640 {
-						c.total = (int(data[3])<<8 | int(data[4])) + 5
+			l := len(data)
+			if c.total == 0 && typ == 23 && l >= 5 {
+				if c.vers == 772 {
+					if data[0] == 23 && data[1] == 3 && data[2] == 3 {
+						if (int(data[3])<<8 | int(data[4])) <= 16640 {
+							c.total = (int(data[3])<<8 | int(data[4])) + 5
+						}
 					}
+				} else {
+					c.RPRX = false
 				}
 			}
 			if c.total != 0 {
-				c.count += len(data)
+				c.count += l
 				if c.count == c.total {
 					c.fall = true
+				} else if c.count > c.total {
+					//c.RPRX = false
 				}
 			}
 			//
 		}
 		//
 	} else {
-		switch typp {
-		case 23:
+		if err != nil {
+			if typp == 23 && n == 19 {
+				if c.SHOW {
+					println(`fallback`, len(backup))
+				}
+				c.retryCount = 0
+				c.input.Reset(backup)
+				return nil
+			}
+			return c.in.setErrorLocked(c.sendAlert(err.(alert)))
+		} else if data == nil {
 			if c.SHOW {
-				println(`received`, typp, len(record))
+				println(`received`, len(record))
 			}
 			c.retryCount = 0
 			c.input.Reset(record)
 			return nil
-		case 21:
-			if err != nil {
-				if c.SHOW {
-					println(`fallback`, typp, len(backup))
-				}
-				c.retryCount = 0
-				c.input.Reset(backup)
-				return c.in.setErrorLocked(io.EOF)
-			}
-			//
-		default:
-			if err != nil {
-				return c.in.setErrorLocked(c.sendAlert(err.(alert)))
-			}
-			//
 		}
+		//
 	}
 
 	if len(data) > maxPlaintext {
@@ -1011,14 +1014,16 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 
 	l = len(data)
 
-	if !c.taken && !c.first {
-		if typ == 23 && (c.vers == 772 || c.vers == 771) && l >= 5 {
+	if !c.taken && !c.first && typ == 23 && l >= 5 {
+		if c.vers == 772 {
 			if data[0] == 23 && data[1] == 3 && data[2] == 3 {
 				if (int(data[3])<<8 | int(data[4])) <= 16640 {
 					c.taken = true
 					c.first = true
 				}
 			}
+		} else {
+			c.RPRX = false
 		}
 	}
 
@@ -1026,15 +1031,10 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 		if l == 0 {
 			return 0, nil
 		}
-		close := false // global?
-		alert := false
+		close := false
 		for i := 0; i < l; i++ {
 			if c.skip != 0 {
 				c.skip -= l - i
-				if close && c.skip != 0 {
-					alert = true
-					break
-				}
 				if c.skip < 0 {
 					i = l + c.skip
 					c.skip = 0
@@ -1059,65 +1059,62 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 			}
 			switch c.index {
 			case 0:
-				if data[i] == 23 || data[i] == 21 {
+				c.maybe = false
+				if data[i] == 23 {
 					c.index++
-					if data[i] == 21 {
-						close = true
-					}
-				} else {
-					alert = true
+				} else { // usually 21
+					close = true
 				}
 			case 1, 2:
 				if data[i] == 3 {
 					c.index++
 				} else {
-					alert = true
+					close = true
 				}
 			case 3:
 				c.cache = data[i]
 				if c.cache <= 66 {
 					c.index++
 				} else {
-					alert = true
+					close = true
 				}
 			case 4:
 				c.skip = int(c.cache)<<8 | int(data[i])
 				if c.skip <= 16640 {
 					c.index = 0
+					if c.skip == 19 {
+						c.maybe = true
+					}
 					if c.SHOW {
-						if i >= 4 {
-							println(data[i-4], c.skip+5)
-						} else {
-							println(-1, c.skip+5)
-						}
+						println(c.skip + 5)
 					}
 				} else {
-					alert = true
+					close = true
 				}
 			}
-			if alert {
-				if c.SHOW {
-					fmt.Printf("alert: typ=%v, c.index=%v, i=%v, data[i]=%v\n", typ, c.index, i, data[i])
+			if close {
+				if t := i - c.index; t > f {
+					c.write(data[f:t])
 				}
-				close = true
+				if c.SHOW {
+					fmt.Printf("close: typ=%v, c.index=%v, i=%v, data[i]=%v\n", typ, c.index, i, data[i])
+				}
 				break
 			}
 		}
-		var err error
-		if alert {
-			err = c.sendAlertLocked(0) // invisible to watcher
-		} else {
-			_, err = c.write(data[f:])
-		}
 		if close {
-			if c.SHOW {
-				fmt.Printf("close: alert=%v, data=%v\n", alert, data)
+			c.closeNotifyErr = c.sendAlertLocked(0)
+			c.closeNotifySent = true
+			c.conn.Close()
+		} else {
+			if _, err := c.write(data[f:]); err != nil {
+				return 0, err
 			}
-			c.conn.Close() // need more code
 		}
-		if err != nil {
-			return 0, err
-		}
+		return l, nil
+	}
+
+	if c.maybe && typ == 21 {
 		return l, nil
 	}
 
