@@ -721,6 +721,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 				if c.SHOW {
 					println(`fallback`, len(backup))
 				}
+				c.in.incSeq()
 				c.retryCount = 0
 				c.input.Reset(backup)
 				return nil
@@ -730,6 +731,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 			if c.SHOW {
 				println(`received`, len(record))
 			}
+			c.in.incSeq()
 			c.retryCount = 0
 			c.input.Reset(record)
 			return nil
@@ -1082,6 +1084,9 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 				c.skip = int(c.cache)<<8 | int(data[i])
 				if c.skip <= 16640 {
 					c.index = 0
+					if !c.first {
+						c.out.incSeq()
+					}
 					if c.skip == 19 {
 						c.maybe = true
 					}
