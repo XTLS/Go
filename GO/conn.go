@@ -104,6 +104,7 @@ type Conn struct {
 
 	RPRX bool
 	SHOW bool
+	MARK string
 
 	fall  bool
 	total int
@@ -681,7 +682,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	var backup, data []byte
 	var err error
 	typp := typ
-	if c.fall && typ == 23 && n == 19 {
+	if c.fall && (typ != 23 || n == 19) {
 		backup = make([]byte, len(record))
 		copy(backup, record)
 	}
@@ -719,22 +720,28 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 		if err != nil {
 			if typp == 23 && n == 19 {
 				if c.SHOW {
-					println(`fallback`, len(backup))
+					fmt.Println(c.MARK, `fallback`, len(backup))
 				}
 				c.in.incSeq()
 				c.retryCount = 0
 				c.input.Reset(backup)
 				return nil
 			}
+			if c.SHOW {
+				fmt.Printf("%v failed to decrypt: typp=%v, backup=%v\n", c.MARK, typp, backup)
+			}
 			return c.in.setErrorLocked(c.sendAlert(err.(alert)))
 		} else if data == nil {
 			if c.SHOW {
-				println(`received`, len(record))
+				fmt.Println(c.MARK, `received`, len(record))
 			}
 			c.in.incSeq()
 			c.retryCount = 0
 			c.input.Reset(record)
 			return nil
+		}
+		if c.SHOW {
+			fmt.Printf("%v starts to process: typ=%v, data=%v\n", c.MARK, typ, data)
 		}
 		//
 	}
@@ -1086,12 +1093,12 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 					c.index = 0
 					if !c.first {
 						c.out.incSeq()
-					}
-					if c.skip == 19 {
-						c.maybe = true
-					}
-					if c.SHOW {
-						println(c.skip + 5)
+						if c.skip == 19 {
+							c.maybe = true
+						}
+						if c.SHOW {
+							fmt.Println(c.MARK, "sent", c.skip+5)
+						}
 					}
 				} else {
 					close = true
@@ -1102,7 +1109,7 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 					c.write(data[f:t])
 				}
 				if c.SHOW {
-					fmt.Printf("close: typ=%v, c.index=%v, i=%v, data[i]=%v\n", typ, c.index, i, data[i])
+					fmt.Printf("%v close: typ=%v, c.index=%v, i=%v, data[i]=%v\n", c.MARK, typ, c.index, i, data[i])
 				}
 				break
 			}
@@ -1119,8 +1126,14 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 		return l, nil
 	}
 
-	if c.maybe && typ == 21 {
-		return l, nil
+	if c.taken && typ == 21 {
+		if c.SHOW {
+			fmt.Printf("%v alert: c.maybe=%v, data=%v\n", c.MARK, c.maybe, data)
+		}
+		if c.maybe {
+			return l, nil
+		}
+		//
 	}
 
 normal:
