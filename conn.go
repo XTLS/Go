@@ -1,3 +1,7 @@
+// XTLS: Copyright 2020 RPRX. All rights reserved.
+// Use of this source code is governed by a PRIVATE
+// license that can be found in the LICENSE file.
+// ---
 // Copyright 2010 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE-Go file.
@@ -97,6 +101,21 @@ type Conn struct {
 	outBuf    []byte       // scratch buffer used by out.encrypt
 	buffering bool         // whether records are buffered in sendBuf
 	sendBuf   []byte       // a buffer of records waiting to be sent
+
+	RPRX bool
+	SHOW bool
+	MARK string
+
+	fall  bool
+	total int
+	count int
+
+	taken bool
+	first bool
+	index int
+	cache byte
+	skip  int
+	maybe bool
 
 	// bytesSent counts the bytes of application data sent.
 	// packetsSent counts packets.
@@ -659,10 +678,74 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 
 	// Process message.
 	record := c.rawInput.Next(recordHeaderLen + n)
-	data, typ, err := c.in.decrypt(record)
-	if err != nil {
-		return c.in.setErrorLocked(c.sendAlert(err.(alert)))
+
+	var backup, data []byte
+	var err error
+	typp := typ
+	if c.fall && (typ != 23 || n == 19) {
+		backup = make([]byte, len(record))
+		copy(backup, record)
 	}
+	if !c.fall || typ != 23 || n == 19 {
+		data, typ, err = c.in.decrypt(record)
+	}
+	if !c.fall {
+		if err != nil {
+			return c.in.setErrorLocked(c.sendAlert(err.(alert)))
+		} else if c.RPRX {
+			l := len(data)
+			if c.total == 0 && typ == 23 && l >= 5 {
+				if c.vers == 772 {
+					if data[0] == 23 && data[1] == 3 && data[2] == 3 {
+						if (int(data[3])<<8 | int(data[4])) <= 16640 {
+							c.total = (int(data[3])<<8 | int(data[4])) + 5
+						}
+					}
+				} else {
+					c.RPRX = false
+				}
+			}
+			if c.total != 0 {
+				c.count += l
+				if c.count == c.total {
+					c.fall = true
+				} else if c.count > c.total {
+					//c.RPRX = false
+				}
+			}
+			//
+		}
+		//
+	} else {
+		if err != nil {
+			if typp == 23 && n == 19 {
+				if c.SHOW {
+					fmt.Println(c.MARK, `fallback`, len(backup))
+				}
+				c.in.incSeq()
+				c.retryCount = 0
+				c.input.Reset(backup)
+				return nil
+			}
+			if c.SHOW {
+				fmt.Printf("%v failed to decrypt: typp=%v, backup=%v\n", c.MARK, typp, backup)
+			}
+			return c.in.setErrorLocked(c.sendAlert(err.(alert)))
+		} else if data == nil {
+			if c.SHOW {
+				fmt.Println(c.MARK, `received`, len(record))
+			}
+			c.in.incSeq()
+			c.retryCount = 0
+			c.input.Reset(record)
+			return nil
+		}
+		if c.SHOW {
+			fmt.Printf("%v starts to process: typ=%v, data=%v\n", c.MARK, typ, data)
+		}
+		//
+	}
+
 	if len(data) > maxPlaintext {
 		return c.in.setErrorLocked(c.sendAlert(alertRecordOverflow))
 	}
@@ -931,7 +1014,132 @@ func (c *Conn) flush() (int, error) {
 // writeRecordLocked writes a TLS record with the given type and payload to the
 // connection and updates the record layer state.
 func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
+
+	var l, f int
+
+	if !c.RPRX {
+		goto normal
+	}
+
+	l = len(data)
+
+	if !c.taken && !c.first && typ == 23 && l >= 5 {
+		if c.vers == 772 {
+			if data[0] == 23 && data[1] == 3 && data[2] == 3 {
+				if (int(data[3])<<8 | int(data[4])) <= 16640 {
+					c.taken = true
+					c.first = true
+				}
+			}
+		} else {
+			c.RPRX = false
+		}
+	}
+
+	if c.taken && typ != 21 {
+		if l == 0 {
+			return 0, nil
+		}
+		close := false
+		for i := 0; i < l; i++ {
+			if c.skip != 0 {
+				c.skip -= l - i
+				if c.skip < 0 {
+					i = l + c.skip
+					c.skip = 0
+					if c.first {
+						f = i
+						c.taken = false
+						c.writeRecordLocked(23, data[:f])
+						c.taken = true
+						c.first = false
+					}
+					i--
+					continue
+				} else {
+					if c.first {
+						if c.skip == 0 {
+							c.first = false
+						}
+						goto normal
+					}
+					break
+				}
+			}
+			switch c.index {
+			case 0:
+				c.maybe = false
+				if data[i] == 23 {
+					c.index++
+				} else { // usually 21
+					close = true
+				}
+			case 1, 2:
+				if data[i] == 3 {
+					c.index++
+				} else {
+					close = true
+				}
+			case 3:
+				c.cache = data[i]
+				if c.cache <= 66 {
+					c.index++
+				} else {
+					close = true
+				}
+			case 4:
+				c.skip = int(c.cache)<<8 | int(data[i])
+				if c.skip <= 16640 {
+					c.index = 0
+					if !c.first {
+						c.out.incSeq()
+						if c.skip == 19 {
+							c.maybe = true
+						}
+						if c.SHOW {
+							fmt.Println(c.MARK, "sent", c.skip+5)
+						}
+					}
+				} else {
+					close = true
+				}
+			}
+			if close {
+				if t := i - c.index; t > f {
+					c.write(data[f:t])
+				}
+				if c.SHOW {
+					fmt.Printf("%v close: typ=%v, c.index=%v, i=%v, data[i]=%v\n", c.MARK, typ, c.index, i, data[i])
+				}
+				break
+			}
+		}
+		if close {
+			c.closeNotifyErr = c.sendAlertLocked(0)
+			c.closeNotifySent = true
+			c.conn.Close()
+		} else {
+			if _, err := c.write(data[f:]); err != nil {
+				return 0, err
+			}
+		}
+		return l, nil
+	}
+
+	if c.taken && typ == 21 {
+		if c.SHOW {
+			fmt.Printf("%v alert: c.maybe=%v, data=%v\n", c.MARK, c.maybe, data)
+		}
+		if c.maybe {
+			return l, nil
+		}
+		//
+	}
+
+normal:
+
 	var n int
+
 	for len(data) > 0 {
 		m := len(data)
 		if maxPayload := c.maxPayloadSizeForWrite(typ); m > maxPayload {
