@@ -17,12 +17,13 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"internal/cpu"
 	"io"
 	"net"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/xtls/go/cpu"
 )
 
 const (
