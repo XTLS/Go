@@ -106,6 +106,8 @@ type Conn struct {
 	SHOW bool
 	MARK string
 
+	ic, oc int
+
 	fall  bool
 	total int
 	count int
@@ -696,10 +698,15 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 			l := len(data)
 			if c.total == 0 && typ == 23 && l >= 5 {
 				if c.vers == 772 {
+					c.ic++
 					if data[0] == 23 && data[1] == 3 && data[2] == 3 {
 						if (int(data[3])<<8 | int(data[4])) <= 16640 {
 							c.total = (int(data[3])<<8 | int(data[4])) + 5
+							c.ic = 0
 						}
+					}
+					if c.ic == 10 {
+						c.RPRX = false
 					}
 				} else {
 					c.RPRX = false
@@ -1025,11 +1032,16 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 
 	if !c.taken && !c.first && typ == 23 && l >= 5 {
 		if c.vers == 772 {
+			c.oc++
 			if data[0] == 23 && data[1] == 3 && data[2] == 3 {
 				if (int(data[3])<<8 | int(data[4])) <= 16640 {
 					c.taken = true
 					c.first = true
+					c.oc = 0
 				}
+			}
+			if c.oc == 10 {
+				c.RPRX = false
 			}
 		} else {
 			c.RPRX = false
