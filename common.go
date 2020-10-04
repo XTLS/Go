@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xtls/go/cpu"
+	"golang.org/x/sys/cpu"
 )
 
 const (
