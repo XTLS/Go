@@ -1321,6 +1321,15 @@ var (
 func (c *Conn) Write(b []byte) (int, error) {
 
 	if c.DirectOut {
+		if s := len(b) - 31; s >= 0 && b[s] == 21 {
+			if b[s+1] == 3 && b[s+2] == 3 && b[s+3] == 0 && b[s+4] == 26 {
+				if c.SHOW {
+					fmt.Println(c.MARK, "discarded 21 3 3 0 26 at s =", s)
+				}
+				c.conn.Write(b[:s])
+				return s + 31, nil
+			}
+		}
 		return c.conn.Write(b)
 	}
 
