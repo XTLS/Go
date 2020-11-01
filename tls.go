@@ -2,9 +2,9 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE-Go file.
 
-// Package tls partially implements TLS 1.2, as specified in RFC 5246,
+// package xtls partially implements TLS 1.2, as specified in RFC 5246,
 // and TLS 1.3, as specified in RFC 8446.
-package tls
+package xtls
 
 // BUG(agl): The crypto/tls package only implements some countermeasures
 // against Lucky13 attacks on CBC-mode encryption, and only on SHA1
@@ -34,8 +34,8 @@ import (
 // at least one certificate or else set GetCertificate.
 func Server(conn net.Conn, config *Config) *Conn {
 	c := &Conn{
-		conn:   conn,
-		config: config,
+		Connection: conn,
+		config:     config,
 	}
 	c.handshakeFn = c.serverHandshake
 	return c
@@ -47,9 +47,9 @@ func Server(conn net.Conn, config *Config) *Conn {
 // InsecureSkipVerify in the config.
 func Client(conn net.Conn, config *Config) *Conn {
 	c := &Conn{
-		conn:     conn,
-		config:   config,
-		isClient: true,
+		Connection: conn,
+		config:     config,
+		isClient:   true,
 	}
 	c.handshakeFn = c.clientHandshake
 	return c

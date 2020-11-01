@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE-Go file.
 
-package tls
+package xtls
 
 import (
 	"bytes"
@@ -17,12 +17,13 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"internal/cpu"
 	"io"
 	"net"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sys/cpu"
 )
 
 const (

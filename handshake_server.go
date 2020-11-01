@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE-Go file.
 
-package tls
+package xtls
 
 import (
 	"crypto"
@@ -827,7 +827,7 @@ func clientHelloInfo(c *Conn, clientHello *clientHelloMsg) *ClientHelloInfo {
 		SignatureSchemes:  clientHello.supportedSignatureAlgorithms,
 		SupportedProtos:   clientHello.alpnProtocols,
 		SupportedVersions: supportedVersions,
-		Conn:              c.conn,
+		Conn:              c.Connection,
 		config:            c.config,
 	}
 }

@@ -1,10 +1,14 @@
+// XTLS: Copyright 2020 RPRX. All rights reserved.
+// Use of this source code is governed by a PRIVATE
+// license that can be found in the LICENSE file.
+// ---
 // Copyright 2010 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE-Go file.
 
-// TLS low level connection and record layer
+// XTLS low level connection and record layer
 
-package tls
+package xtls
 
 import (
 	"bytes"
@@ -24,7 +28,7 @@ import (
 // It implements the net.Conn interface.
 type Conn struct {
 	// constant
-	conn        net.Conn
+	Connection  net.Conn
 	isClient    bool
 	handshakeFn func() error // (*Conn).clientHandshake or serverHandshake
 
@@ -98,6 +102,28 @@ type Conn struct {
 	buffering bool         // whether records are buffered in sendBuf
 	sendBuf   []byte       // a buffer of records waiting to be sent
 
+	DirectMode bool
+	DirectPre  bool
+	DirectIn   bool
+	DirectOut  bool
+
+	RPRX bool
+	SHOW bool
+	MARK string
+
+	ic, oc int
+
+	fall  bool
+	total int
+	count int
+
+	taken bool
+	first bool
+	index int
+	cache byte
+	skip  int
+	maybe bool
+
 	// bytesSent counts the bytes of application data sent.
 	// packetsSent counts packets.
 	bytesSent   int64
@@ -122,32 +148,32 @@ type Conn struct {
 
 // LocalAddr returns the local network address.
 func (c *Conn) LocalAddr() net.Addr {
-	return c.conn.LocalAddr()
+	return c.Connection.LocalAddr()
 }
 
 // RemoteAddr returns the remote network address.
 func (c *Conn) RemoteAddr() net.Addr {
-	return c.conn.RemoteAddr()
+	return c.Connection.RemoteAddr()
 }
 
 // SetDeadline sets the read and write deadlines associated with the connection.
 // A zero value for t means Read and Write will not time out.
 // After a Write has timed out, the TLS state is corrupt and all future writes will return the same error.
 func (c *Conn) SetDeadline(t time.Time) error {
-	return c.conn.SetDeadline(t)
+	return c.Connection.SetDeadline(t)
 }
 
 // SetReadDeadline sets the read deadline on the underlying connection.
 // A zero value for t means Read will not time out.
 func (c *Conn) SetReadDeadline(t time.Time) error {
-	return c.conn.SetReadDeadline(t)
+	return c.Connection.SetReadDeadline(t)
 }
 
 // SetWriteDeadline sets the write deadline on the underlying connection.
 // A zero value for t means Write will not time out.
 // After a Write has timed out, the TLS state is corrupt and all future writes will return the same error.
 func (c *Conn) SetWriteDeadline(t time.Time) error {
-	return c.conn.SetWriteDeadline(t)
+	return c.Connection.SetWriteDeadline(t)
 }
 
 // A halfConn represents one direction of the record layer
@@ -605,7 +631,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	c.input.Reset(nil)
 
 	// Read header, payload.
-	if err := c.readFromUntil(c.conn, recordHeaderLen); err != nil {
+	if err := c.readFromUntil(c.Connection, recordHeaderLen); err != nil {
 		// RFC 8446, Section 6.1 suggests that EOF without an alertCloseNotify
 		// is an error, but popular web sites seem to do this, so we accept it
 		// if and only if at the record boundary.
@@ -642,7 +668,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 		// The current max version is 3.3 so if the version is >= 16.0,
 		// it's probably not real.
 		if (typ != recordTypeAlert && typ != recordTypeHandshake) || vers >= 0x1000 {
-			return c.in.setErrorLocked(c.newRecordHeaderError(c.conn, "first record does not look like a TLS handshake"))
+			return c.in.setErrorLocked(c.newRecordHeaderError(c.Connection, "first record does not look like a TLS handshake"))
 		}
 	}
 	if c.vers == VersionTLS13 && n > maxCiphertextTLS13 || n > maxCiphertext {
@@ -650,7 +676,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 		msg := fmt.Sprintf("oversized record received with length %d", n)
 		return c.in.setErrorLocked(c.newRecordHeaderError(nil, msg))
 	}
-	if err := c.readFromUntil(c.conn, recordHeaderLen+n); err != nil {
+	if err := c.readFromUntil(c.Connection, recordHeaderLen+n); err != nil {
 		if e, ok := err.(net.Error); !ok || !e.Temporary() {
 			c.in.setErrorLocked(err)
 		}
@@ -659,10 +685,85 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 
 	// Process message.
 	record := c.rawInput.Next(recordHeaderLen + n)
-	data, typ, err := c.in.decrypt(record)
-	if err != nil {
-		return c.in.setErrorLocked(c.sendAlert(err.(alert)))
+
+	var backup, data []byte
+	var err error
+	typp := typ
+	if c.fall && (typ != 23 || n == 19) {
+		backup = make([]byte, len(record))
+		copy(backup, record)
 	}
+	if !c.fall || typ != 23 || n == 19 {
+		data, typ, err = c.in.decrypt(record)
+	}
+	if !c.fall {
+		if err != nil {
+			return c.in.setErrorLocked(c.sendAlert(err.(alert)))
+		} else if c.RPRX {
+			l := len(data)
+			if c.total == 0 && typ == 23 && l >= 5 {
+				if c.vers == 772 {
+					c.ic++
+					if data[0] == 23 && data[1] == 3 && data[2] == 3 {
+						if (int(data[3])<<8 | int(data[4])) <= 16640 {
+							c.total = (int(data[3])<<8 | int(data[4])) + 5
+							c.ic = 0
+						}
+					}
+					if c.ic == 10 {
+						c.RPRX = false
+					}
+				} else {
+					c.RPRX = false
+				}
+			}
+			if c.total != 0 {
+				c.count += l
+				if c.count == c.total {
+					c.fall = true
+					if c.DirectMode {
+						c.DirectPre = true
+						if c.SHOW {
+							fmt.Println(c.MARK, "DirectPre = true")
+						}
+					}
+				} else if c.count > c.total {
+					//c.RPRX = false
+				}
+			}
+			//
+		}
+		//
+	} else {
+		if err != nil {
+			if typp == 23 && n == 19 {
+				if c.SHOW {
+					fmt.Println(c.MARK, `fallback`, len(backup))
+				}
+				c.in.incSeq()
+				c.retryCount = 0
+				c.input.Reset(backup)
+				return nil
+			}
+			if c.SHOW {
+				fmt.Printf("%v failed to decrypt: typp=%v, backup=%v\n", c.MARK, typp, backup)
+			}
+			return c.in.setErrorLocked(c.sendAlert(err.(alert)))
+		} else if data == nil {
+			if c.SHOW {
+				fmt.Println(c.MARK, `received`, len(record))
+			}
+			c.in.incSeq()
+			c.retryCount = 0
+			c.input.Reset(record)
+			return nil
+		}
+		if c.SHOW {
+			fmt.Printf("%v starts to process: typ=%v, data=%v\n", c.MARK, typ, data)
+		}
+		//
+	}
+
 	if len(data) > maxPlaintext {
 		return c.in.setErrorLocked(c.sendAlert(alertRecordOverflow))
 	}
@@ -911,7 +1012,7 @@ func (c *Conn) write(data []byte) (int, error) {
 		return len(data), nil
 	}
 
-	n, err := c.conn.Write(data)
+	n, err := c.Connection.Write(data)
 	c.bytesSent += int64(n)
 	return n, err
 }
@@ -921,7 +1022,7 @@ func (c *Conn) flush() (int, error) {
 		return 0, nil
 	}
 
-	n, err := c.conn.Write(c.sendBuf)
+	n, err := c.Connection.Write(c.sendBuf)
 	c.bytesSent += int64(n)
 	c.sendBuf = nil
 	c.buffering = false
@@ -931,7 +1032,149 @@ func (c *Conn) flush() (int, error) {
 // writeRecordLocked writes a TLS record with the given type and payload to the
 // connection and updates the record layer state.
 func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
+
+	var l, f int
+
+	if !c.RPRX {
+		goto normal
+	}
+
+	l = len(data)
+
+	if !c.taken && !c.first && typ == 23 && l >= 5 {
+		if c.vers == 772 {
+			c.oc++
+			if data[0] == 23 && data[1] == 3 && data[2] == 3 {
+				if (int(data[3])<<8 | int(data[4])) <= 16640 {
+					c.taken = true
+					c.first = true
+					c.oc = 0
+				}
+			}
+			if c.oc == 10 {
+				c.RPRX = false
+			}
+		} else {
+			c.RPRX = false
+		}
+	}
+
+	if c.taken && typ != 21 {
+		if l == 0 {
+			return 0, nil
+		}
+		close := false
+		for i := 0; i < l; i++ {
+			if c.skip != 0 {
+				c.skip -= l - i
+				if c.skip < 0 {
+					i = l + c.skip
+					c.skip = 0
+					if c.first {
+						f = i
+						c.taken = false
+						c.writeRecordLocked(23, data[:f])
+						c.taken = true
+						c.first = false
+						if c.DirectMode {
+							c.DirectOut = true
+							if c.SHOW {
+								fmt.Println(c.MARK, "DirectOut = true")
+							}
+						}
+					}
+					i--
+					continue
+				} else {
+					if c.first {
+						if c.skip == 0 {
+							c.first = false
+							if c.DirectMode {
+								c.DirectOut = true
+								if c.SHOW {
+									fmt.Println(c.MARK, "DirectOut = true")
+								}
+							}
+						}
+						goto normal
+					}
+					break
+				}
+			}
+			switch c.index {
+			case 0:
+				c.maybe = false
+				if data[i] == 23 {
+					c.index++
+				} else { // usually 21
+					close = true
+				}
+			case 1, 2:
+				if data[i] == 3 {
+					c.index++
+				} else {
+					close = true
+				}
+			case 3:
+				c.cache = data[i]
+				if c.cache <= 66 {
+					c.index++
+				} else {
+					close = true
+				}
+			case 4:
+				c.skip = int(c.cache)<<8 | int(data[i])
+				if c.skip <= 16640 {
+					c.index = 0
+					if !c.first {
+						c.out.incSeq()
+						if c.skip == 19 {
+							c.maybe = true
+						}
+						if c.SHOW {
+							fmt.Println(c.MARK, "sent", c.skip+5)
+						}
+					}
+				} else {
+					close = true
+				}
+			}
+			if close {
+				if t := i - c.index; t > f {
+					c.write(data[f:t])
+				}
+				if c.SHOW {
+					fmt.Printf("%v close: typ=%v, c.index=%v, i=%v, data[i]=%v\n", c.MARK, typ, c.index, i, data[i])
+				}
+				break
+			}
+		}
+		if close {
+			c.closeNotifyErr = c.sendAlertLocked(0)
+			c.closeNotifySent = true
+			c.Connection.Close()
+		} else {
+			if _, err := c.write(data[f:]); err != nil {
+				return 0, err
+			}
+		}
+		return l, nil
+	}
+
+	if c.taken && typ == 21 {
+		if c.SHOW {
+			fmt.Printf("%v alert: c.maybe=%v, data=%v\n", c.MARK, c.maybe, data)
+		}
+		if c.maybe {
+			return l, nil
+		}
+		//
+	}
+
+normal:
+
 	var n int
+
 	for len(data) > 0 {
 		m := len(data)
 		if maxPayload := c.maxPayloadSizeForWrite(typ); m > maxPayload {
@@ -1076,6 +1319,20 @@ var (
 
 // Write writes data to the connection.
 func (c *Conn) Write(b []byte) (int, error) {
+
+	if c.DirectOut {
+		if s := len(b) - 31; s >= 0 && b[s] == 21 {
+			if b[s+1] == 3 && b[s+2] == 3 && b[s+3] == 0 && b[s+4] == 26 {
+				if c.SHOW {
+					fmt.Println(c.MARK, "discarded 21 3 3 0 26 at s =", s)
+				}
+				c.Connection.Write(b[:s])
+				return s + 31, nil
+			}
+		}
+		return c.Connection.Write(b)
+	}
+
 	// interlock with Close below
 	for {
 		x := atomic.LoadInt32(&c.activeCall)
@@ -1236,6 +1493,27 @@ func (c *Conn) handleKeyUpdate(keyUpdate *keyUpdateMsg) error {
 // Read can be made to time out and return a net.Error with Timeout() == true
 // after a fixed time limit; see SetDeadline and SetReadDeadline.
 func (c *Conn) Read(b []byte) (int, error) {
+
+	if c.DirectIn {
+		return c.Connection.Read(b)
+	}
+
+	if c.DirectPre {
+		if c.input.Len() != 0 {
+			n, _ := c.input.Read(b)
+			return n, nil
+		}
+		if c.rawInput.Len() != 0 {
+			n, _ := c.rawInput.Read(b)
+			return n, nil
+		}
+		c.DirectIn = true
+		if c.SHOW {
+			fmt.Println(c.MARK, "DirectIn = true")
+		}
+		return c.Connection.Read(b)
+	}
+
 	if err := c.Handshake(); err != nil {
 		return 0, err
 	}
@@ -1280,6 +1558,11 @@ func (c *Conn) Read(b []byte) (int, error) {
 
 // Close closes the connection.
 func (c *Conn) Close() error {
+
+	if c.DirectOut {
+		return c.Connection.Close()
+	}
+
 	// Interlock with Conn.Write above.
 	var x int32
 	for {
@@ -1298,7 +1581,7 @@ func (c *Conn) Close() error {
 		// being used to break the Write and/or clean up resources and
 		// avoid sending the alertCloseNotify, which may block
 		// waiting on handshakeMutex or the c.out mutex.
-		return c.conn.Close()
+		return c.Connection.Close()
 	}
 
 	var alertErr error
@@ -1307,7 +1590,7 @@ func (c *Conn) Close() error {
 		alertErr = c.closeNotify()
 	}
 
-	if err := c.conn.Close(); err != nil {
+	if err := c.Connection.Close(); err != nil {
 		return err
 	}
 	return alertErr

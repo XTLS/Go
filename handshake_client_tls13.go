@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE-Go file.
 
-package tls
+package xtls
 
 import (
 	"bytes"
@@ -672,7 +672,7 @@ func (c *Conn) handleNewSessionTicket(msg *newSessionTicketMsgTLS13) error {
 		scts:               c.scts,
 	}
 
-	cacheKey := clientSessionCacheKey(c.conn.RemoteAddr(), c.config)
+	cacheKey := clientSessionCacheKey(c.Connection.RemoteAddr(), c.config)
 	c.config.ClientSessionCache.Put(cacheKey, session)
 
 	return nil
