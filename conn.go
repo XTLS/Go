@@ -1,6 +1,6 @@
 // XTLS: Copyright 2020 RPRX. All rights reserved.
-// Use of this source code is governed by a PRIVATE
-// license that can be found in the LICENSE file.
+// Use of this source code is governed by the
+// MPLv2.0 that can be found in the LICENSE file.
 // ---
 // Copyright 2010 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
