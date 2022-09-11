@@ -675,7 +675,7 @@ func (c *Conn) handleNewSessionTicket(msg *newSessionTicketMsgTLS13) error {
 		scts:               c.scts,
 	}
 
-	cacheKey := clientSessionCacheKey(c.Connection.RemoteAddr(), c.config)
+	cacheKey := clientSessionCacheKey(c.conn.RemoteAddr(), c.config)
 	c.config.ClientSessionCache.Put(cacheKey, session)
 
 	return nil
