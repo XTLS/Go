@@ -1,4 +1,4 @@
 # XTLS
 THE FUTURE
 
-## Based on go1.17
+## Based on go1.19

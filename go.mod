@@ -3,6 +3,6 @@ module github.com/xtls/go
 go 1.19
 
 require (
-	golang.org/x/crypto v0.0.0-20210817164053-32db794688a5
-	golang.org/x/sys v0.0.0-20210908233432-aa78b53d3365
+	golang.org/x/crypto v0.0.0-20220829220503-c86fa9a7ed90
+	golang.org/x/sys v0.0.0-20220913175220-63ea55921009
 )
