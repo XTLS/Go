@@ -262,7 +262,7 @@ func (c *Conn) loadSession(hello *clientHelloMsg) (cacheKey string,
 	}
 
 	// Try to resume a previously negotiated TLS session, if available.
-	cacheKey = clientSessionCacheKey(c.Connection.RemoteAddr(), c.config)
+	cacheKey = clientSessionCacheKey(c.conn.RemoteAddr(), c.config)
 	session, ok := c.config.ClientSessionCache.Get(cacheKey)
 	if !ok || session == nil {
 		return cacheKey, nil, nil, nil
